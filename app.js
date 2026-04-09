@@ -289,6 +289,33 @@ function randInt(min, max) { return Math.floor(rand(min, max)); }
 function randEl(arr) { return arr[randInt(0, arr.length)]; }
 function randAddr() { return '0x' + Array.from({length: 40}, () => '0123456789abcdef'[randInt(0,16)]).join(''); }
 function shortAddr(a) { return a.startsWith('0x') ? a.slice(0,6) + '...' + a.slice(-4) : a; }
+function genTxHash() { return '0x' + Array.from({length: 64}, () => '0123456789abcdef'[randInt(0,16)]).join(''); }
+function getSourceInfo(market, token, txHash) {
+    const sources = {
+        crypto: [
+            { name: 'Etherscan', url: `https://etherscan.io/tx/${txHash}`, icon: '🔍' },
+            { name: 'Whale Alert', url: `https://whale-alert.io/transaction/ethereum/${txHash}`, icon: '🐋' },
+            { name: 'Blockchain.com', url: `https://www.blockchain.com/explorer/transactions/eth/${txHash}`, icon: '⛓️' },
+        ],
+        equities: [
+            { name: 'SEC EDGAR', url: `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(token)}&type=13F`, icon: '📋' },
+            { name: 'WhaleWisdom', url: `https://whalewisdom.com/stock/${token.replace('/USD','').toLowerCase()}`, icon: '🏦' },
+            { name: 'Finviz', url: `https://finviz.com/quote.ashx?t=${token}`, icon: '📈' },
+        ],
+        commodities: [
+            { name: 'CFTC COT', url: 'https://www.cftc.gov/MarketReports/CommitmentsofTraders/index.htm', icon: '📊' },
+            { name: 'World Gold Council', url: 'https://www.gold.org/goldhub/data/gold-etfs-holdings-and-flows', icon: '🥇' },
+            { name: 'TradingView', url: `https://www.tradingview.com/symbols/${token.replace('/','')}/`, icon: '📉' },
+        ],
+        indices: [
+            { name: 'Finviz', url: 'https://finviz.com/futures.ashx', icon: '📈' },
+            { name: 'TradingView', url: `https://www.tradingview.com/symbols/${token}/`, icon: '📉' },
+            { name: 'Investing.com', url: `https://www.investing.com/indices/`, icon: '🌐' },
+        ],
+    };
+    const pool = sources[market] || sources.crypto;
+    return pool[randInt(0, pool.length)];
+}
 function formatUSD(n) {
     if (n >= 1e12) return '$' + (n/1e12).toFixed(2) + 'T';
     if (n >= 1e9) return '$' + (n/1e9).toFixed(2) + 'B';
@@ -315,13 +342,16 @@ function generateWhaleAlert() {
     const type = randEl(TX_TYPES);
     const impact = amount > 20000000 ? 'high' : amount > 5000000 ? 'medium' : 'low';
     const isInstitutional = token.market !== 'crypto';
+    const txHash = genTxHash();
+    const source = getSourceInfo(token.market, token.symbol, txHash);
     return {
         id: Date.now() + randInt(0, 9999), token: token.symbol, tokenName: token.name,
         market: token.market, amount, type, impact,
         from: isInstitutional ? randEl(WHALE_NAMES) : randAddr(),
         to: isInstitutional ? (type === 'compra' ? 'Acumulação' : type === 'venda' ? 'Redução' : 'Rebalanceamento') : randAddr(),
         time: Date.now() - randInt(0, 3600000),
-        whaleName: randEl(WHALE_NAMES)
+        whaleName: randEl(WHALE_NAMES),
+        txHash, sourceUrl: source.url, sourceName: source.name, sourceIcon: source.icon
     };
 }
 
@@ -494,29 +524,35 @@ function setTicker(id, token) {
 }
 
 // ---- ALERTAS DE BALEIAS ----
+function renderAlertHTML(a) {
+    const mktLabel = {commodities:'🥇 COMMODITY', indices:'📊 ÍNDICE', equities:'📈 AÇÃO', crypto:'₿ CRYPTO'}[a.market] || a.market;
+    const isInst = a.market !== 'crypto';
+    const sourceLink = a.sourceUrl ? `<a href="${a.sourceUrl}" target="_blank" rel="noopener" class="alert-source-link" title="Verificar em ${a.sourceName}">${a.sourceIcon || '🔗'} ${a.sourceName}</a>` : '';
+    const hashDisplay = a.txHash ? `<span class="alert-hash" title="${a.txHash}">#${a.txHash.slice(2,10)}</span>` : '';
+    return `<div class="alert-item" data-chain="${a.market}" data-impact="${a.impact}">
+        <div class="alert-impact ${a.impact}">${a.impact === 'high' ? '🔴' : a.impact === 'medium' ? '🟡' : '🟢'}</div>
+        <div class="alert-info">
+            <div class="alert-title">
+                <span class="amount">${formatUSD(a.amount)}</span> ${a.token}
+                <span class="alert-chain-tag ${a.market}">${mktLabel}</span>
+                ${hashDisplay}
+            </div>
+            <div class="alert-detail">
+                <span>${a.whaleName}</span>
+                <span class="addr">${isInst ? a.type.toUpperCase() + ' → ' + a.to : shortAddr(a.from) + ' → ' + shortAddr(a.to)}</span>
+                ${sourceLink}
+            </div>
+        </div>
+        <div class="alert-meta">
+            <div class="alert-time">${tempoAtras(Date.now() - a.time)}</div>
+            <span class="alert-type-tag ${a.type}">${a.type}</span>
+        </div>
+    </div>`;
+}
+
 function renderWhaleAlerts() {
     const feed = document.getElementById('alert-feed');
-    feed.innerHTML = state.alerts.map(a => {
-        const mktLabel = {commodities:'🥇 COMMODITY', indices:'📊 ÍNDICE', equities:'📈 AÇÃO', crypto:'₿ CRYPTO'}[a.market] || a.market;
-        const isInst = a.market !== 'crypto';
-        return `<div class="alert-item" data-chain="${a.market}" data-impact="${a.impact}">
-            <div class="alert-impact ${a.impact}">${a.impact === 'high' ? '🔴' : a.impact === 'medium' ? '🟡' : '🟢'}</div>
-            <div class="alert-info">
-                <div class="alert-title">
-                    <span class="amount">${formatUSD(a.amount)}</span> ${a.token}
-                    <span class="alert-chain-tag ${a.market}">${mktLabel}</span>
-                </div>
-                <div class="alert-detail">
-                    <span>${a.whaleName}</span>
-                    <span class="addr">${isInst ? a.type.toUpperCase() + ' → ' + a.to : shortAddr(a.from) + ' → ' + shortAddr(a.to)}</span>
-                </div>
-            </div>
-            <div class="alert-meta">
-                <div class="alert-time">${tempoAtras(Date.now() - a.time)}</div>
-                <span class="alert-type-tag ${a.type}">${a.type}</span>
-            </div>
-        </div>`;
-    }).join('');
+    feed.innerHTML = state.alerts.map(a => renderAlertHTML(a)).join('');
     document.getElementById('alert-count').textContent = state.alerts.length;
     document.getElementById('alert-chain-filter').onchange = document.getElementById('alert-impact-filter').onchange = filterAlerts;
     document.getElementById('alert-pause').onclick = () => {
@@ -908,18 +944,11 @@ function startLiveUpdates() {
         if (state.alerts.length > 100) state.alerts.pop();
         if (state.currentSection === 'whale-alerts') {
             const feed = document.getElementById('alert-feed');
-            const mktLabel = {commodities:'🥇 COMMODITY', indices:'📊 ÍNDICE', equities:'📈 AÇÃO', crypto:'₿ CRYPTO'}[alert.market] || alert.market;
-            const isInst = alert.market !== 'crypto';
             const div = document.createElement('div');
-            div.innerHTML = `<div class="alert-item" data-chain="${alert.market}" data-impact="${alert.impact}" style="background:rgba(99,102,241,0.05)">
-                <div class="alert-impact ${alert.impact}">${alert.impact === 'high' ? '🔴' : alert.impact === 'medium' ? '🟡' : '🟢'}</div>
-                <div class="alert-info">
-                    <div class="alert-title"><span class="amount">${formatUSD(alert.amount)}</span> ${alert.token} <span class="alert-chain-tag ${alert.market}">${mktLabel}</span></div>
-                    <div class="alert-detail"><span>${alert.whaleName}</span><span class="addr">${isInst ? alert.type.toUpperCase() + ' → ' + alert.to : shortAddr(alert.from) + ' → ' + shortAddr(alert.to)}</span></div>
-                </div>
-                <div class="alert-meta"><div class="alert-time">agora</div><span class="alert-type-tag ${alert.type}">${alert.type}</span></div>
-            </div>`;
-            feed.insertBefore(div.firstElementChild, feed.firstElementChild);
+            div.innerHTML = renderAlertHTML(alert);
+            const newItem = div.firstElementChild;
+            newItem.style.background = 'rgba(99,102,241,0.05)';
+            feed.insertBefore(newItem, feed.firstElementChild);
         }
         document.getElementById('alert-count').textContent = state.alerts.length;
         updateAlertStats();

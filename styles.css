@@ -984,6 +984,52 @@ a {
     background: rgba(239, 68, 68, 0.12);
     color: var(--accent-bear-light);
 }
+.alert-type-tag.compra {
+    background: rgba(16, 185, 129, 0.12);
+    color: var(--accent-bull);
+}
+.alert-type-tag.venda {
+    background: rgba(239, 68, 68, 0.12);
+    color: var(--accent-bear-light);
+}
+.alert-type-tag.hedge, .alert-type-tag.posição {
+    background: rgba(99, 102, 241, 0.12);
+    color: var(--accent-whale-light);
+}
+
+/* Source Verification Link */
+.alert-source-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--accent-info-light);
+    background: rgba(59, 130, 246, 0.08);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    padding: 1px 8px;
+    border-radius: 12px;
+    text-decoration: none;
+    transition: all var(--transition-fast);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.alert-source-link:hover {
+    background: rgba(59, 130, 246, 0.2);
+    border-color: rgba(59, 130, 246, 0.5);
+    color: #93c5fd;
+    box-shadow: 0 0 12px rgba(59, 130, 246, 0.2);
+    transform: translateY(-1px);
+}
+.alert-hash {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    background: rgba(148, 163, 184, 0.08);
+    padding: 1px 6px;
+    border-radius: 4px;
+    letter-spacing: 0.3px;
+}
 
 /* ---------- MARKET HEATMAP ---------- */
 .market-heatmap {
