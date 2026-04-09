@@ -1,8 +1,219 @@
 // ============================================================
-// MONITOR DE BALEIAS v2.0 — Smart Money Avançado
+// MONITOR DE BALEIAS v3.0 — Smart Money Avançado + LIVE DATA
 // Foco: Ouro, Petróleo, Prata, Índices, Ações & Crypto Selecionado
+// APIs: CoinGecko (crypto, grátis) + Finnhub (ações/commodities)
 // Idioma: Português (BR)
 // ============================================================
+
+// ===================== LIVE DATA MANAGER =====================
+const LiveData = {
+    // Finnhub symbol mapping for each TOKENS entry
+    finnhubMap: {
+        'XAU/USD': 'OANDA:XAU_USD',
+        'XAG/USD': 'OANDA:XAG_USD',
+        'WTI':     'OANDA:WTICO_USD',
+        'BRENT':   'OANDA:BCO_USD',
+        'NG':      'OANDA:NATGAS_USD',
+        'COPPER':  'OANDA:COPPER_USD',
+        // Indices via ETFs (Finnhub free doesn't have direct index quotes)
+        'US500':   'SPY',
+        'US30':    'DIA',
+        'US100':   'QQQ',
+        'HK50':    'EWH',   // Hong Kong ETF proxy
+        'DAX':     'EWG',   // Germany ETF proxy
+        'FTSE':    'EWU',   // UK ETF proxy
+        'NIKKEI':  'EWJ',   // Japan ETF proxy
+        // Direct stocks
+        'AAPL':'AAPL','MSFT':'MSFT','NVDA':'NVDA','TSLA':'TSLA',
+        'AMZN':'AMZN','META':'META','GOOGL':'GOOGL','JPM':'JPM','GS':'GS',
+    },
+    // ETF-to-index multiplier (approximate)
+    indexMultiplier: {
+        'US500': 10.1,   // SPY ~553 * 10.1 ≈ 5580
+        'US30':  97.5,   // DIA ~430 * 97.5 ≈ 41900
+        'US100': 49.0,   // QQQ ~396 * 49 ≈ 19404
+        'HK50':  720,    // EWH ~32 * 720 ≈ 23040
+        'DAX':   625,    // EWG ~36 * 625 ≈ 22500
+        'FTSE':  274,    // EWU ~31.5 * 274 ≈ 8600
+        'NIKKEI': 530,   // EWJ ~70 * 530 ≈ 37100
+    },
+    // CoinGecko IDs
+    cryptoIds: {
+        'BTC/USD': 'bitcoin',
+        'ETH/USD': 'ethereum',
+        'XRP/USD': 'ripple',
+        'BNB/USD': 'binancecoin',
+        'TRX/USD': 'tron',
+        'SOL/USD': 'solana',
+    },
+    cache: {},
+    CACHE_TTL: 30000, // 30s cache
+    isLive: { crypto: false, stocks: false },
+    lastFetch: { crypto: 0, stocks: 0 },
+
+    getApiKeys() {
+        try { return JSON.parse(localStorage.getItem('whalevault_api_keys') || '{}'); }
+        catch(e) { return {}; }
+    },
+
+    isCached(key) {
+        return this.cache[key] && (Date.now() - this.cache[key].ts < this.CACHE_TTL);
+    },
+
+    // ---- CRYPTO via CoinGecko (NO KEY NEEDED) ----
+    async fetchCryptoPrices() {
+        const cacheKey = 'crypto_prices';
+        if (this.isCached(cacheKey)) return this.cache[cacheKey].data;
+        const ids = Object.values(this.cryptoIds).join(',');
+        try {
+            const keys = this.getApiKeys();
+            let url = `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true`;
+            const headers = {};
+            if (keys.coingecko) {
+                url = `https://pro-api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true`;
+                headers['x-cg-pro-api-key'] = keys.coingecko;
+            }
+            const res = await fetch(url, { headers });
+            if (!res.ok) throw new Error(`CoinGecko ${res.status}`);
+            const data = await res.json();
+            this.cache[cacheKey] = { data, ts: Date.now() };
+            this.isLive.crypto = true;
+            return data;
+        } catch(e) {
+            console.warn('CoinGecko error:', e.message);
+            this.isLive.crypto = false;
+            return null;
+        }
+    },
+
+    // ---- STOCKS/COMMODITIES via Finnhub ----
+    async fetchFinnhubQuote(symbol) {
+        const keys = this.getApiKeys();
+        if (!keys.finnhub) return null;
+        const finnSymbol = this.finnhubMap[symbol];
+        if (!finnSymbol) return null;
+        const cacheKey = 'fh_' + finnSymbol;
+        if (this.isCached(cacheKey)) return this.cache[cacheKey].data;
+        try {
+            const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(finnSymbol)}&token=${keys.finnhub}`);
+            if (!res.ok) throw new Error(`Finnhub ${res.status}`);
+            const data = await res.json();
+            if (!data.c || data.c === 0) return null;
+            this.cache[cacheKey] = { data, ts: Date.now() };
+            this.isLive.stocks = true;
+            return data;
+        } catch(e) {
+            console.warn(`Finnhub error for ${symbol}:`, e.message);
+            return null;
+        }
+    },
+
+    // ---- FEAR & GREED INDEX (crypto) ----
+    async fetchFearGreed() {
+        const cacheKey = 'fear_greed';
+        if (this.isCached(cacheKey)) return this.cache[cacheKey].data;
+        try {
+            const res = await fetch('https://api.alternative.me/fng/?limit=1');
+            if (!res.ok) throw new Error('FnG error');
+            const data = await res.json();
+            const value = parseInt(data.data[0].value);
+            this.cache[cacheKey] = { data: value, ts: Date.now() };
+            return value;
+        } catch(e) {
+            console.warn('Fear&Greed error:', e.message);
+            return null;
+        }
+    },
+
+    // ---- MAIN SYNC: Update all tokens with live prices ----
+    async syncAll() {
+        let updatedCount = 0;
+        // 1. Crypto via CoinGecko
+        const cryptoData = await this.fetchCryptoPrices();
+        if (cryptoData) {
+            for (const [symbol, geckoId] of Object.entries(this.cryptoIds)) {
+                const d = cryptoData[geckoId];
+                if (!d) continue;
+                const token = state.tokens.find(t => t.symbol === symbol);
+                if (!token) continue;
+                const oldPrice = token.price;
+                token.price = d.usd;
+                token.change24h = d.usd_24h_change || token.change24h;
+                token.mcap = d.usd_market_cap || token.mcap;
+                token._vol24h = d.usd_24h_vol || 0;
+                token._live = true;
+                updatedCount++;
+            }
+        }
+        // 2. Stocks/Commodities via Finnhub (rate-limited: batch with delays)
+        const keys = this.getApiKeys();
+        if (keys.finnhub) {
+            const nonCrypto = state.tokens.filter(t => t.market !== 'crypto');
+            for (let i = 0; i < nonCrypto.length; i++) {
+                const token = nonCrypto[i];
+                const quote = await this.fetchFinnhubQuote(token.symbol);
+                if (quote && quote.c > 0) {
+                    let price = quote.c;
+                    // Apply index multiplier for ETF proxies
+                    if (this.indexMultiplier[token.symbol]) {
+                        price = price * this.indexMultiplier[token.symbol];
+                    }
+                    token.price = price;
+                    // dp = daily percent change
+                    if (quote.dp !== undefined && quote.dp !== null) {
+                        token.change24h = quote.dp;
+                    } else if (quote.pc > 0) {
+                        token.change24h = ((quote.c - quote.pc) / quote.pc) * 100;
+                    }
+                    token._prevClose = quote.pc;
+                    token._high = quote.h;
+                    token._low = quote.l;
+                    token._live = true;
+                    updatedCount++;
+                }
+                // Respect rate limit: ~15 calls/sec to be safe
+                if (i < nonCrypto.length - 1) {
+                    await new Promise(r => setTimeout(r, 80));
+                }
+            }
+        }
+        // 3. Fear & Greed
+        const fng = await this.fetchFearGreed();
+        if (fng !== null) state.fearGreedIndex = fng;
+
+        // Update mode badge
+        const anyLive = this.isLive.crypto || this.isLive.stocks;
+        const badge = document.getElementById('mode-badge');
+        const dot = badge.querySelector('.mode-dot');
+        const label = badge.querySelector('.mode-label');
+        if (this.isLive.crypto && this.isLive.stocks) {
+            label.textContent = '🟢 LIVE';
+            badge.style.background = 'rgba(16,185,129,0.15)';
+            badge.style.borderColor = 'rgba(16,185,129,0.3)';
+        } else if (anyLive) {
+            label.textContent = '🟡 PARCIAL';
+            badge.style.background = 'rgba(245,158,11,0.15)';
+            badge.style.borderColor = 'rgba(245,158,11,0.3)';
+        } else {
+            label.textContent = 'DEMO';
+            badge.style.background = '';
+            badge.style.borderColor = '';
+        }
+
+        // Update status
+        const statusEl = document.getElementById('api-status');
+        if (statusEl) {
+            const parts = [];
+            if (this.isLive.crypto) parts.push('✅ Crypto (CoinGecko)');
+            else parts.push('⬜ Crypto (sem conexão)');
+            if (this.isLive.stocks) parts.push('✅ Ações/Commodities (Finnhub)');
+            else parts.push('⬜ Ações/Commodities (sem chave Finnhub)');
+            statusEl.innerHTML = parts.join(' &nbsp;|&nbsp; ');
+        }
+
+        return updatedCount;
+    }
+};
 
 // ---- ATIVOS MULTI-MERCADO ----
 const TOKENS = [
@@ -47,7 +258,6 @@ const WHALE_NAMES = [
     'Point72', 'Baleia Anônima', 'Fundo Institucional', 'Cripto Baleia #1', 'Hedge Fund Alpha'
 ];
 const TX_TYPES = ['compra', 'venda', 'posição', 'hedge'];
-const MARKETS = ['commodities', 'indices', 'equities', 'crypto'];
 const SUBREDDITS = ['wallstreetbets', 'stocks', 'CryptoCurrency', 'commodities', 'Gold'];
 const TOPICS = [
     'ouro refúgio', 'petróleo OPEC', 'corte Fed', 'inflação', 'recessão', 'guerra comercial',
@@ -59,78 +269,18 @@ const TOPICS = [
 
 // ---- FONTES DE DADOS ----
 const DATA_SOURCES = [
-    {
-        name: 'Whale Alert', icon: '🐋', type: 'Rastreio de Baleias Crypto',
-        desc: 'Monitoramento em tempo real de transações grandes em blockchain. Detecta movimentos de BTC, ETH e outras criptos entre carteiras e exchanges.',
-        tags: ['crypto', 'blockchain', 'transações', 'tempo real'],
-        url: 'https://whale-alert.io', status: 'active'
-    },
-    {
-        name: 'WhaleWisdom', icon: '🏦', type: 'Posições Institucionais (13F)',
-        desc: 'Rastreia relatórios SEC 13F de hedge funds e gestores institucionais. Veja o que Buffett, Dalio e Soros estão comprando e vendendo.',
-        tags: ['ações', 'hedge funds', '13F', 'SEC', 'institucional'],
-        url: 'https://whalewisdom.com', status: 'active'
-    },
-    {
-        name: 'CFTC COT Report', icon: '📊', type: 'Posicionamento de Futuros',
-        desc: 'Commitment of Traders — posicionamento de comerciais, grandes especuladores e small traders em futuros de ouro, petróleo, prata e índices.',
-        tags: ['commodities', 'futuros', 'ouro', 'petróleo', 'COT'],
-        url: 'https://www.cftc.gov/MarketReports/CommitmentsofTraders', status: 'active'
-    },
-    {
-        name: 'Finviz', icon: '📈', type: 'Screener & Mapa de Mercado',
-        desc: 'Screener avançado de ações com mapa de calor do mercado, insider trading, e análise fundamentalista para ações dos EUA.',
-        tags: ['ações', 'screener', 'insider', 'heatmap'],
-        url: 'https://finviz.com', status: 'active'
-    },
-    {
-        name: 'TradingView', icon: '📉', type: 'Gráficos & Análise Técnica',
-        desc: 'Plataforma líder de gráficos com dados em tempo real para commodities, índices, ações e crypto. Ideias da comunidade de traders.',
-        tags: ['gráficos', 'análise técnica', 'multi-ativo', 'comunidade'],
-        url: 'https://tradingview.com', status: 'active'
-    },
-    {
-        name: 'Koyfin', icon: '💹', type: 'Terminal Financeiro',
-        desc: 'Terminal estilo Bloomberg gratuito. Dados macro, métricas de valuation, screening avançado e dashboards customizáveis.',
-        tags: ['macro', 'fundamental', 'terminal', 'valuation'],
-        url: 'https://koyfin.com', status: 'active'
-    },
-    {
-        name: 'Unusual Whales', icon: '🦑', type: 'Fluxo de Opções & Dark Pool',
-        desc: 'Detecta atividade incomum em opções de ações e fluxo de dark pool. Identifica apostas grandes de smart money em equities.',
-        tags: ['opções', 'dark pool', 'smart money', 'ações'],
-        url: 'https://unusualwhales.com', status: 'active'
-    },
-    {
-        name: 'Hyperliquid', icon: '⚡', type: 'Perpetuals & Open Interest',
-        desc: 'API pública com posições de perps, open interest e trades de baleias em crypto. Sem necessidade de API key.',
-        tags: ['crypto', 'perps', 'open interest', 'DeFi'],
-        url: 'https://hyperliquid.xyz', status: 'active'
-    },
-    {
-        name: 'Reddit Sentiment', icon: '💬', type: 'Inteligência Social',
-        desc: 'Análise de sentimento de r/wallstreetbets, r/stocks, r/commodities e r/Gold. Detecta tendências e narrativas emergentes.',
-        tags: ['sentimento', 'social', 'Reddit', 'análise'],
-        url: 'https://reddit.com', status: 'active'
-    },
-    {
-        name: 'World Gold Council', icon: '🥇', type: 'Dados de Ouro Institucional',
-        desc: 'Dados sobre demanda e oferta global de ouro, compras de bancos centrais, fluxos de ETF de ouro e reservas de países.',
-        tags: ['ouro', 'banco central', 'ETF', 'reservas'],
-        url: 'https://www.gold.org', status: 'active'
-    },
-    {
-        name: 'OPEC Monthly Report', icon: '🛢️', type: 'Relatórios de Petróleo',
-        desc: 'Relatórios mensais da OPEC com projeções de oferta/demanda, produção por país e impacto em preços do petróleo.',
-        tags: ['petróleo', 'OPEC', 'produção', 'relatório'],
-        url: 'https://www.opec.org', status: 'active'
-    },
-    {
-        name: 'Fear & Greed Index', icon: '😱', type: 'Sentimento de Mercado',
-        desc: 'Índice CNN de Medo e Ganância para ações e Alternative.me para crypto. Termômetro do sentimento de mercado.',
-        tags: ['sentimento', 'medo', 'ganância', 'mercado'],
-        url: 'https://edition.cnn.com/markets/fear-and-greed', status: 'active'
-    },
+    { name: 'Whale Alert', icon: '🐋', type: 'Rastreio de Baleias Crypto', desc: 'Monitoramento em tempo real de transações grandes em blockchain. Detecta movimentos de BTC, ETH e outras criptos entre carteiras e exchanges.', tags: ['crypto', 'blockchain', 'transações', 'tempo real'], url: 'https://whale-alert.io', status: 'active' },
+    { name: 'WhaleWisdom', icon: '🏦', type: 'Posições Institucionais (13F)', desc: 'Rastreia relatórios SEC 13F de hedge funds e gestores institucionais. Veja o que Buffett, Dalio e Soros estão comprando e vendendo.', tags: ['ações', 'hedge funds', '13F', 'SEC', 'institucional'], url: 'https://whalewisdom.com', status: 'active' },
+    { name: 'CFTC COT Report', icon: '📊', type: 'Posicionamento de Futuros', desc: 'Commitment of Traders — posicionamento de comerciais, grandes especuladores e small traders em futuros de ouro, petróleo, prata e índices.', tags: ['commodities', 'futuros', 'ouro', 'petróleo', 'COT'], url: 'https://www.cftc.gov/MarketReports/CommitmentsofTraders', status: 'active' },
+    { name: 'Finviz', icon: '📈', type: 'Screener & Mapa de Mercado', desc: 'Screener avançado de ações com mapa de calor do mercado, insider trading, e análise fundamentalista para ações dos EUA.', tags: ['ações', 'screener', 'insider', 'heatmap'], url: 'https://finviz.com', status: 'active' },
+    { name: 'TradingView', icon: '📉', type: 'Gráficos & Análise Técnica', desc: 'Plataforma líder de gráficos com dados em tempo real para commodities, índices, ações e crypto. Ideias da comunidade de traders.', tags: ['gráficos', 'análise técnica', 'multi-ativo', 'comunidade'], url: 'https://tradingview.com', status: 'active' },
+    { name: 'Koyfin', icon: '💹', type: 'Terminal Financeiro', desc: 'Terminal estilo Bloomberg gratuito. Dados macro, métricas de valuation, screening avançado e dashboards customizáveis.', tags: ['macro', 'fundamental', 'terminal', 'valuation'], url: 'https://koyfin.com', status: 'active' },
+    { name: 'Unusual Whales', icon: '🦑', type: 'Fluxo de Opções & Dark Pool', desc: 'Detecta atividade incomum em opções de ações e fluxo de dark pool. Identifica apostas grandes de smart money em equities.', tags: ['opções', 'dark pool', 'smart money', 'ações'], url: 'https://unusualwhales.com', status: 'active' },
+    { name: 'Hyperliquid', icon: '⚡', type: 'Perpetuals & Open Interest', desc: 'API pública com posições de perps, open interest e trades de baleias em crypto. Sem necessidade de API key.', tags: ['crypto', 'perps', 'open interest', 'DeFi'], url: 'https://hyperliquid.xyz', status: 'active' },
+    { name: 'Reddit Sentiment', icon: '💬', type: 'Inteligência Social', desc: 'Análise de sentimento de r/wallstreetbets, r/stocks, r/commodities e r/Gold. Detecta tendências e narrativas emergentes.', tags: ['sentimento', 'social', 'Reddit', 'análise'], url: 'https://reddit.com', status: 'active' },
+    { name: 'World Gold Council', icon: '🥇', type: 'Dados de Ouro Institucional', desc: 'Dados sobre demanda e oferta global de ouro, compras de bancos centrais, fluxos de ETF de ouro e reservas de países.', tags: ['ouro', 'banco central', 'ETF', 'reservas'], url: 'https://www.gold.org', status: 'active' },
+    { name: 'OPEC Monthly Report', icon: '🛢️', type: 'Relatórios de Petróleo', desc: 'Relatórios mensais da OPEC com projeções de oferta/demanda, produção por país e impacto em preços do petróleo.', tags: ['petróleo', 'OPEC', 'produção', 'relatório'], url: 'https://www.opec.org', status: 'active' },
+    { name: 'Fear & Greed Index', icon: '😱', type: 'Sentimento de Mercado', desc: 'Índice CNN de Medo e Ganância para ações e Alternative.me para crypto. Termômetro do sentimento de mercado.', tags: ['sentimento', 'medo', 'ganância', 'mercado'], url: 'https://edition.cnn.com/markets/fear-and-greed', status: 'active' },
 ];
 
 // ---- UTILIDADES ----
@@ -194,13 +344,9 @@ function generateRedditPost() {
         'Fundos soberanos do Oriente Médio diversificando para ações tech',
     ];
     return {
-        title: randEl(titles),
-        subreddit: randEl(SUBREDDITS),
-        upvotes: randInt(50, 5000),
-        comments: randInt(20, 800),
-        sentiment: randEl(['positive', 'negative', 'neutral']),
-        sentimentScore: rand(-1, 1),
-        time: Date.now() - randInt(0, 86400000),
+        title: randEl(titles), subreddit: randEl(SUBREDDITS), upvotes: randInt(50, 5000),
+        comments: randInt(20, 800), sentiment: randEl(['positive', 'negative', 'neutral']),
+        sentimentScore: rand(-1, 1), time: Date.now() - randInt(0, 86400000),
         author: 'u/' + randEl(['GoldBull2026', 'SmartMoneyTracker', 'OilAnalyst', 'WallStreetInsider', 'CommoditiesKing', 'IndexTraderPro', 'MacroResearcher'])
     };
 }
@@ -232,19 +378,29 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 2200);
 });
 
-function initApp() {
+async function initApp() {
     setupNavigation();
     setupSearch();
     setupSidebar();
+    setupSettings();
+    renderDataSources();
+
+    // First live sync attempt
+    showToast('🔄', 'Conectando às fontes de dados...', 'whale');
+    const updated = await LiveData.syncAll();
+    if (updated > 0) {
+        showToast('✅', `${updated} ativos atualizados com preços reais!`, 'bull');
+    } else {
+        showToast('ℹ️', 'Modo demo ativo. Configure API keys em Configurações.', 'alert');
+    }
+
     updateTickers();
     renderWhaleAlerts();
     renderMarketOverview();
     renderVolumeScanner();
     renderCohortAnalysis();
     renderCommunityIntel();
-    renderDataSources();
     updateAlertStats();
-    setupSettings();
     startLiveUpdates();
     document.getElementById('last-update').textContent = 'Última atualização: agora';
 }
@@ -305,9 +461,10 @@ function renderSearchResults(query) {
     let html = '';
     matches.forEach(t => {
         const cc = t.change24h >= 0 ? 'positive-text' : 'negative-text';
+        const liveTag = t._live ? ' 🟢' : '';
         html += `<div class="search-result-item" onclick="navigateTo('market-overview');document.getElementById('search-modal').classList.add('hidden')">
             <span class="result-icon">${t.icon || '💰'}</span>
-            <div class="result-info"><div class="result-name">${t.symbol}</div><div class="result-meta">${t.name} • ${formatUSD(t.price)} • ${t.classe}</div></div>
+            <div class="result-info"><div class="result-name">${t.symbol}${liveTag}</div><div class="result-meta">${t.name} • ${formatUSD(t.price)} • ${t.classe}</div></div>
             <span class="${cc}" style="font-family:var(--font-mono);font-size:0.8rem">${t.change24h >= 0 ? '+' : ''}${t.change24h.toFixed(2)}%</span>
         </div>`;
     });
@@ -414,8 +571,9 @@ function renderHeatmap() {
     document.getElementById('market-heatmap').innerHTML = state.tokens.map(t => {
         const bg = getHeatmapColor(t.change24h);
         const tc = Math.abs(t.change24h) > 5 ? 'white' : 'var(--text-primary)';
-        return `<div class="heatmap-cell" style="background:${bg};color:${tc}" title="${t.name} (${t.classe}): ${formatUSD(t.price)}">
-            <span class="cell-symbol">${t.icon || ''} ${t.symbol}</span>
+        const liveIndicator = t._live ? '🟢 ' : '';
+        return `<div class="heatmap-cell" style="background:${bg};color:${tc}" title="${t.name} (${t.classe}): ${formatUSD(t.price)}${t._live ? ' [LIVE]' : ' [DEMO]'}">
+            <span class="cell-symbol">${liveIndicator}${t.icon || ''} ${t.symbol}</span>
             <span class="cell-change">${t.change24h >= 0 ? '+' : ''}${t.change24h.toFixed(2)}%</span>
             <span class="cell-price">${formatUSD(t.price)}</span>
         </div>`;
@@ -426,14 +584,15 @@ function renderMarketTable() {
     document.getElementById('market-table-body').innerHTML = state.tokens.map((t, i) => {
         const c24 = t.change24h >= 0 ? 'positive-text' : 'negative-text';
         const c7d = t.change7d >= 0 ? 'positive-text' : 'negative-text';
+        const liveTag = t._live ? ' 🟢' : '';
         return `<tr>
             <td>${i + 1}</td>
-            <td><div class="asset-cell"><span class="asset-symbol">${t.icon || ''} ${t.symbol}</span><span class="asset-name">${t.name}</span></div></td>
+            <td><div class="asset-cell"><span class="asset-symbol">${t.icon || ''} ${t.symbol}${liveTag}</span><span class="asset-name">${t.name}</span></div></td>
             <td>${formatUSD(t.price)}</td>
             <td class="${c24}">${t.change24h >= 0 ? '+' : ''}${t.change24h.toFixed(2)}%</td>
             <td class="${c7d}">${t.change7d >= 0 ? '+' : ''}${t.change7d.toFixed(2)}%</td>
             <td>${t.classe}</td>
-            <td>${formatUSD(t.mcap > 0 ? t.mcap * rand(0.02, 0.08) : rand(1e8, 5e9))}</td>
+            <td>${formatUSD(t._vol24h || (t.mcap > 0 ? t.mcap * rand(0.02, 0.08) : rand(1e8, 5e9)))}</td>
             <td><canvas class="sparkline-canvas" data-idx="${i}"></canvas></td>
         </tr>`;
     }).join('');
@@ -472,7 +631,7 @@ function renderVolumeScanner() {
     const grid = document.getElementById('volume-scanner-grid');
     const volumeData = state.tokens.map(t => {
         const spike = rand(0.5, 8);
-        const vol24h = (t.mcap > 0 ? t.mcap * rand(0.02, 0.1) : rand(1e8, 5e9));
+        const vol24h = t._vol24h || (t.mcap > 0 ? t.mcap * rand(0.02, 0.1) : rand(1e8, 5e9));
         return { ...t, spike, vol24h, avg7d: vol24h / spike };
     }).sort((a, b) => b.spike - a.spike);
     grid.innerHTML = volumeData.map(v => {
@@ -627,7 +786,6 @@ function renderCommunityIntel() {
     document.getElementById('stat-posts-count').textContent = state.posts.length.toLocaleString();
     document.getElementById('stat-trending').textContent = randEl(TOPICS);
     document.getElementById('stat-fear').textContent = state.fearGreedIndex + '/100';
-    
     document.getElementById('sentiment-heatmap').innerHTML = state.tokens.map(t => {
         const score = rand(-1, 1);
         const bg = score > 0.3 ? 'rgba(16,185,129,0.25)' : score < -0.3 ? 'rgba(239,68,68,0.25)' : 'rgba(148,163,184,0.12)';
@@ -638,13 +796,11 @@ function renderCommunityIntel() {
             <span class="sent-label">${label}</span>
         </div>`;
     }).join('');
-    
     document.getElementById('word-cloud').innerHTML = TOPICS.map(topic => {
         const size = rand(0.7, 1.6);
         const colors = ['#6366f1', '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#818cf8', '#34d399', '#60a5fa'];
         return `<span class="cloud-word" style="font-size:${size}rem;color:${randEl(colors)}">${topic}</span>`;
     }).join('');
-    
     document.getElementById('community-posts').innerHTML = state.posts.map(p => `
         <div class="post-item">
             <div class="post-sentiment-indicator ${p.sentiment}"></div>
@@ -686,25 +842,43 @@ function renderDataSources() {
 
 // ---- CONFIGURAÇÕES ----
 function setupSettings() {
-    document.getElementById('save-api-keys')?.addEventListener('click', () => {
-        localStorage.setItem('whalevault_api_keys', JSON.stringify({
-            coingecko: document.getElementById('api-coingecko').value,
-            etherscan: document.getElementById('api-etherscan').value,
-        }));
-        showToast('✅', 'Chaves de API salvas!', 'bull');
+    document.getElementById('save-api-keys')?.addEventListener('click', async () => {
+        const keys = {
+            finnhub: document.getElementById('api-finnhub')?.value || '',
+            coingecko: document.getElementById('api-coingecko')?.value || '',
+            etherscan: document.getElementById('api-etherscan')?.value || '',
+        };
+        localStorage.setItem('whalevault_api_keys', JSON.stringify(keys));
+        showToast('🔄', 'Salvando chaves e conectando...', 'whale');
+        // Clear cache to force fresh fetch
+        LiveData.cache = {};
+        LiveData.isLive = { crypto: false, stocks: false };
+        const updated = await LiveData.syncAll();
+        if (updated > 0) {
+            showToast('✅', `Conectado! ${updated} ativos com preços reais.`, 'bull');
+            updateTickers();
+            renderHeatmap();
+            renderMarketTable();
+            renderMarketOverview();
+        } else {
+            showToast('⚠️', 'Verifique suas chaves de API.', 'alert');
+        }
     });
     document.getElementById('clear-cache')?.addEventListener('click', () => {
         localStorage.removeItem('whalevault_cache');
+        LiveData.cache = {};
         document.getElementById('cache-size').textContent = '0 KB';
         showToast('🗑️', 'Cache limpo', 'alert');
     });
     document.getElementById('export-data')?.addEventListener('click', () => {
         const blob = new Blob([JSON.stringify({ alerts: state.alerts, tokens: state.tokens, posts: state.posts }, null, 2)], { type: 'application/json' });
-        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'whalevault_export.json'; a.click();
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'monitor_baleias_export.json'; a.click();
         showToast('📥', 'Dados exportados', 'whale');
     });
+    // Load saved keys
     try {
         const saved = JSON.parse(localStorage.getItem('whalevault_api_keys') || '{}');
+        if (saved.finnhub) document.getElementById('api-finnhub').value = saved.finnhub;
         if (saved.coingecko) document.getElementById('api-coingecko').value = saved.coingecko;
         if (saved.etherscan) document.getElementById('api-etherscan').value = saved.etherscan;
     } catch(e) {}
@@ -725,6 +899,7 @@ function showToast(icon, message, type = 'whale') {
 
 // ---- ATUALIZAÇÕES AO VIVO ----
 function startLiveUpdates() {
+    // Whale alert simulation (continues in both live and demo mode)
     setInterval(() => {
         if (state.alertsPaused) return;
         const alert = generateWhaleAlert();
@@ -750,10 +925,32 @@ function startLiveUpdates() {
         updateAlertStats();
         if (alert.impact === 'high') showToast('🐋', `${formatUSD(alert.amount)} ${alert.token} ${alert.type} detectado!`, 'bear');
     }, randInt(5000, 12000));
+
+    // LIVE DATA SYNC: every 60 seconds
+    setInterval(async () => {
+        const updated = await LiveData.syncAll();
+        if (updated > 0) {
+            updateTickers();
+            if (state.currentSection === 'market-overview') {
+                renderHeatmap();
+                renderMarketOverview();
+            }
+            const now = new Date();
+            document.getElementById('last-update').textContent = `Última atualização: ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`;
+        }
+    }, 60000);
+
+    // Small ticker animation for non-live tokens (demo mode drift)
     setInterval(() => {
-        state.tokens.forEach(t => { t.price *= (1 + rand(-0.003, 0.003)); t.change24h += rand(-0.15, 0.15); });
+        state.tokens.forEach(t => {
+            if (!t._live) {
+                t.price *= (1 + rand(-0.002, 0.002));
+                t.change24h += rand(-0.05, 0.05);
+            }
+        });
         updateTickers();
-        state.fearGreedIndex = Math.max(5, Math.min(95, state.fearGreedIndex + randInt(-2, 3)));
-        document.getElementById('last-update').textContent = 'Última atualização: agora';
-    }, 3000);
+        if (!LiveData.isLive.crypto && !LiveData.isLive.stocks) {
+            state.fearGreedIndex = Math.max(5, Math.min(95, state.fearGreedIndex + randInt(-1, 2)));
+        }
+    }, 5000);
 }

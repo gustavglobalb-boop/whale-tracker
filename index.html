@@ -485,16 +485,22 @@
                         <div class="settings-card">
                             <h3 class="settings-card-title">🔑 Configuração de APIs</h3>
                             <div class="setting-row">
-                                <label class="setting-label" for="api-coingecko">CoinGecko API Key</label>
-                                <input type="password" id="api-coingecko" class="setting-input" placeholder="Chave da API CoinGecko Demo">
-                                <span class="setting-hint">Grátis: 30 chamadas/min</span>
+                                <label class="setting-label" for="api-finnhub">Finnhub API Key (Ações, Commodities, Índices)</label>
+                                <input type="password" id="api-finnhub" class="setting-input" placeholder="Cadastre grátis em finnhub.io">
+                                <span class="setting-hint">Grátis: 60 chamadas/min • Necessário para preços de ações e commodities</span>
                             </div>
                             <div class="setting-row">
-                                <label class="setting-label" for="api-etherscan">Etherscan API Key</label>
-                                <input type="password" id="api-etherscan" class="setting-input" placeholder="Chave da API Etherscan">
-                                <span class="setting-hint">Grátis: 3 chamadas/seg</span>
+                                <label class="setting-label" for="api-coingecko">CoinGecko API Key (Opcional)</label>
+                                <input type="password" id="api-coingecko" class="setting-input" placeholder="Opcional — preços crypto funcionam sem chave">
+                                <span class="setting-hint">Opcional: Crypto funciona sem chave. Com chave: 30 chamadas/min</span>
                             </div>
-                            <button id="save-api-keys" class="btn-primary">Salvar Chaves</button>
+                            <div class="setting-row">
+                                <label class="setting-label" for="api-etherscan">Etherscan API Key (Rastreio de Carteiras)</label>
+                                <input type="password" id="api-etherscan" class="setting-input" placeholder="Cadastre grátis em etherscan.io">
+                                <span class="setting-hint">Grátis: 3 chamadas/seg • Para rastreio de carteiras on-chain</span>
+                            </div>
+                            <button id="save-api-keys" class="btn-primary">Salvar Chaves & Conectar</button>
+                            <div id="api-status" style="margin-top:12px;font-size:0.8rem;color:var(--text-secondary)"></div>
                         </div>
                         <div class="settings-card">
                             <h3 class="settings-card-title">🔔 Preferências de Alerta</h3>
